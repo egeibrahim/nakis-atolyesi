@@ -93,7 +93,12 @@ button:disabled{opacity:.5;cursor:not-allowed}
           <strong>Görsel seç</strong> ya da buraya sürükle<br>
           <span id="srcName" class="tag">Örnek: dalga rozeti</span>
         </label>
-        <label class="check"><input type="checkbox" id="removeBg" checked> Arka planı kaldır (köşe rengi)</label>
+        <div class="row"><label for="removeBg">Arka plan</label>
+          <select id="removeBg">
+            <option value="edge">Sadece dış zemini kaldır</option>
+            <option value="all">Zemin rengini her yerden kaldır</option>
+            <option value="off">Kaldırma</option>
+          </select></div>
       </div>
 
       <div class="sec">
@@ -186,7 +191,7 @@ button:disabled{opacity:.5;cursor:not-allowed}
 <script>
 (()=>{
 const $=id=>document.getElementById(id);
-const P={width:100,ncol:5,row:.4,maxst:4,minDet:1,satin:5,underlay:true,angle:'alt',removeBg:true,fabric:'#15161a',showJumps:false};
+const P={width:100,ncol:5,row:.4,maxst:4,minDet:1,satin:5,underlay:true,angle:'alt',removeBg:'edge',fabric:'#15161a',showJumps:false};
 let srcCanvas=null, srcName='dalga-rozeti';
 let D=null;      // processed data: {W,H,PX,labels,centers,areas,enabled}
 let S=null;      // stitch result: {ops,perColor,trims,count}
@@ -223,14 +228,24 @@ function processImage(){
   // background mask
   const mask=new Uint8Array(sw*sh);
   let bg=null;
-  if(P.removeBg){
+  if(P.removeBg!=='off'){
     const pts=[[0,0],[sw-1,0],[0,sh-1],[sw-1,sh-1]].map(([x,y])=>{const i=(y*sw+x)*4;return [sd[i],sd[i+1],sd[i+2],sd[i+3]]});
     bg=pts[0];
   }
   let x0=sw,y0=sh,x1=-1,y1=-1;
+  // pixels that look like the background colour
+  const like=new Uint8Array(sw*sh);
+  if(bg&&bg[3]>128)for(let i=0;i<sw*sh;i++){const d=Math.abs(sd[i*4]-bg[0])+Math.abs(sd[i*4+1]-bg[1])+Math.abs(sd[i*4+2]-bg[2]);if(d<60)like[i]=1}
+  // "edge" mode: only background connected to the image border is removed, whites inside the design stay
+  let gone=like;
+  if(P.removeBg==='edge'){
+    gone=new Uint8Array(sw*sh);const qq=new Int32Array(sw*sh);let h=0,t=0;
+    const seed=i=>{if(like[i]&&!gone[i]){gone[i]=1;qq[t++]=i}};
+    for(let x=0;x<sw;x++){seed(x);seed((sh-1)*sw+x)}for(let y=0;y<sh;y++){seed(y*sw);seed(y*sw+sw-1)}
+    while(h<t){const p=qq[h++],x=p%sw;if(x>0)seed(p-1);if(x<sw-1)seed(p+1);if(p>=sw)seed(p-sw);if(p<sw*(sh-1))seed(p+sw)}
+  }
   for(let y=0;y<sh;y++)for(let x=0;x<sw;x++){
-    const i=(y*sw+x)*4;let on=sd[i+3]>128;
-    if(on&&bg&&bg[3]>128){const d=Math.abs(sd[i]-bg[0])+Math.abs(sd[i+1]-bg[1])+Math.abs(sd[i+2]-bg[2]);if(d<60)on=false;}
+    const i=(y*sw+x)*4;let on=sd[i+3]>128&&!gone[y*sw+x];
     if(on){mask[y*sw+x]=1;if(x<x0)x0=x;if(x>x1)x1=x;if(y<y0)y0=y;if(y>y1)y1=y;}
   }
   if(x1<0){D=null;return false}
@@ -564,7 +579,7 @@ function run(full){
   timer=setTimeout(()=>requestAnimationFrame(()=>setTimeout(()=>{
     try{
       $('msg').textContent='';
-      if(full){if(processImage())remapOverrides();else{$('msg').textContent='Görselde dikilecek alan bulunamadı. Arka planı kaldır seçeneğini kapatmayı dene.'}}
+      if(full){if(processImage())remapOverrides();else{$('msg').textContent='Görselde dikilecek alan bulunamadı. Arka plan seçeneğini değiştirmeyi dene.'}}
       buildStitches();render();updateStats();showRegion();
     }catch(e){$('msg').textContent='İşlem sırasında hata oluştu: '+e.message}
     $('busy').hidden=true;
@@ -695,7 +710,7 @@ $('rgAll').onclick=()=>{if(!SEL)return;const s=regionSettings();for(let i=OV.len
 $('rgReset').onclick=()=>{const i=selEntry();if(i>=0)OV.splice(i,1);showRegion();rebuild()};
 $('cv').addEventListener('click',e=>selectAt(e.clientX,e.clientY));
 $('angle').onchange=e=>{P.angle=e.target.value;rebuild()};
-$('removeBg').onchange=e=>{P.removeBg=e.target.checked;run(true)};
+$('removeBg').onchange=e=>{P.removeBg=e.target.value;run(true)};
 $('fabric').oninput=e=>{P.fabric=e.target.value;$('hoop').style.background=P.fabric;render()};
 $('showJumps').onchange=e=>{P.showJumps=e.target.checked;render()};
 
