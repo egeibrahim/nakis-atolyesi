@@ -207,8 +207,11 @@ function processImage(){
   const tmp=document.createElement('canvas');tmp.width=W;tmp.height=H;const tg=tmp.getContext('2d');
   tg.imageSmoothingQuality='high';tg.drawImage(sc,x0,y0,cw,ch,0,0,W,H);
   const td=tg.getImageData(0,0,W,H).data;
-  const on=new Uint8Array(W*H);
-  for(let y=0;y<H;y++){const sy=Math.min(sh-1,y0+Math.floor((y+.5)*ch/H));for(let x=0;x<W;x++){const sx=Math.min(sw-1,x0+Math.floor((x+.5)*cw/W));on[y*W+x]=mask[sy*sw+sx];}}
+  const mc=document.createElement('canvas');mc.width=cw;mc.height=ch;const mg=mc.getContext('2d');const mi=mg.createImageData(cw,ch);
+  for(let y=0;y<ch;y++)for(let x=0;x<cw;x++){const v=mask[(y0+y)*sw+x0+x]?255:0,i=(y*cw+x)*4;mi.data[i]=mi.data[i+1]=mi.data[i+2]=v;mi.data[i+3]=255}
+  mg.putImageData(mi,0,0);const ms=document.createElement('canvas');ms.width=W;ms.height=H;const msg=ms.getContext('2d');msg.imageSmoothingQuality='high';msg.drawImage(mc,0,0,W,H);
+  const md=msg.getImageData(0,0,W,H).data;const on=new Uint8Array(W*H);
+  for(let i=0;i<W*H;i++)on[i]=md[i*4]>178?1:0;
   // lab
   const N=W*H, L=new Float32Array(N*3);
   for(let i=0;i<N;i++){if(!on[i])continue;const l=rgb2lab(td[i*4],td[i*4+1],td[i*4+2]);L[i*3]=l[0];L[i*3+1]=l[1];L[i*3+2]=l[2];}
@@ -269,7 +272,7 @@ function buildStitches(){
   const {W,H,PX,labels}=D;const K=D.centers.length;
   const rowpx=P.row/PX, maxst=P.maxst/PX, minrun=Math.max(1,P.minDet*.6/PX), minArea=(P.minDet/PX)**2*.8;
   const jumpTh=2/PX, trimTh=7/PX, ov=0.35/PX;
-  const satRow=Math.min(P.row,.35)/PX, satMaxW=P.satin/PX, pull=.2/PX, minSatW=1/PX, satLong=7/PX;
+  const near1=1/PX,satRow=Math.min(P.row,.35)/PX, satMaxW=P.satin/PX, pull=.2/PX, minSatW=1/PX, satLong=7/PX;
   const ids=[...Array(K).keys()].filter(k=>D.areas[k]>0);
   const base=ids.reduce((a,b)=>D.areas[b]>D.areas[a]?b:a,ids[0]);
   const order=[base,...ids.filter(k=>k!==base).sort((a,b)=>D.light[b]-D.light[a])];
@@ -354,7 +357,7 @@ function buildStitches(){
       let m=0,qx=0,qy=0,qxx=0,qyy=0,qxy=0;const pad=T;
       for(let y=Math.max(0,ty-pad);y<Math.min(ty+T+pad,H);y++)for(let x=Math.max(0,tx-pad);x<Math.min(tx+T+pad,W);x++)if(comp[y*W+x]===b.id){m++;qx+=x;qy+=y;qxx+=x*x;qyy+=y*y;qxy+=x*y}
       const mx=qx/m,my=qy/m,axis=.5*Math.atan2(2*(qxy/m-mx*my),(qxx/m-mx*mx)-(qyy/m-my*my));
-      tiles.push({rect:[tx,ty,tx+T,ty+T],axis,cx:tx+T/2,cy:ty+T/2});
+      tiles.push({rect:[tx-2,ty-2,tx+T+2,ty+T+2],axis,cx:tx+T/2,cy:ty+T/2});
     }
     while(tiles.length){
       let bi=0;if(last){let bd=1e18;tiles.forEach((t,i)=>{const d=(t.cx-last[0])**2+(t.cy-last[1])**2;if(d<bd){bd=d;bi=i}})}
@@ -365,7 +368,8 @@ function buildStitches(){
   function satinChain(ch){
     ch.forEach(({run,P2,L},j)=>{
       let a0=run.a,a1=run.c;const w=a1-a0;let ext=pull;if(w+2*ext<minSatW)ext=(minSatW-w)/2;
-      a0-=L(a0-1.5)>=0?Math.max(ext,ov):ext;a1+=L(a1+1.5)>=0?Math.max(ext,ov):ext;
+      const crowd=(s,d)=>{for(let k=2;k<=near1;k+=1)if(L(s+d*k)>=0)return true;return false};
+      a0-=L(a0-1.5)>=0?Math.max(ext,ov):(crowd(a0,-1)?0:ext);a1+=L(a1+1.5)>=0?Math.max(ext,ov):(crowd(a1,1)?0:ext);
       const sA=j%2?a1:a0,sB=j%2?a0:a1;const p0=P2(sA);goTo(p0[0],p0[1]);
       const n=Math.ceil(Math.abs(sB-sA)/satLong);for(let i=1;i<=n;i++){const p=P2(sA+(sB-sA)*i/n);put('S',p[0],p[1])}
     });
