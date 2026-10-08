@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: nakis-atolyesi-api
+    runtime: docker
+    rootDir: server
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    plan: starter
+    healthCheckPath: /api/health
+    envVars:
+      - key: ALLOWED_ORIGINS
+        value: https://egeibrahim.github.io,https://claude.ai
+      - key: WORKERS
+        value: "1"

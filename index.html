@@ -71,6 +71,7 @@ button:disabled{opacity:.5;cursor:not-allowed}
 @media (max-width:560px){.region-body{grid-template-columns:minmax(0,1fr)}}
 .region-body .actions{grid-column:1/-1}
 .hoop canvas{cursor:crosshair}
+input[type=url]{font:inherit;color:var(--fg);background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:6px 8px;width:100%}
 .note{color:var(--muted);font-size:.85rem;max-width:70ch}
 .msg{font-size:.85rem;color:var(--warn)}
 .tag{font-family:var(--f-mono);font-size:.7rem;color:var(--muted);border:1px solid var(--line);border-radius:4px;padding:1px 6px}
@@ -86,6 +87,20 @@ button:disabled{opacity:.5;cursor:not-allowed}
 
   <div class="grid">
     <aside class="rail">
+      <div class="sec">
+        <h2>Motor</h2>
+        <div class="row"><label for="engine">Dikiş motoru</label>
+          <select id="engine">
+            <option value="fast">Hızlı (tarayıcı)</option>
+            <option value="pro">Profesyonel (Ink/Stitch)</option>
+          </select></div>
+        <div class="sec" id="proBox" hidden>
+          <label for="apiUrl">Sunucu adresi</label>
+          <input id="apiUrl" type="url" placeholder="https://nakis-atolyesi-api.onrender.com" autocomplete="off">
+          <button id="proGo">Profesyonel dikiş oluştur</button>
+          <span id="proMsg" class="note"></span>
+        </div>
+      </div>
       <div class="sec">
         <h2>Görsel</h2>
         <label class="drop" id="drop" tabindex="0">
@@ -492,7 +507,7 @@ function render(target,size){
   const lw=Math.max(.6,.42/D.PX*sc);
   g.lineCap='round';
   let ci=0;let col=S.order.filter(k=>D.enabled[k]&&S.perColor[k]>0);let cur=null;
-  const colOf=i=>D.centers[col[i]]||[200,200,200];
+  const colOf=i=>S.threads?(S.threads[i]||[200,200,200]):(D.centers[col[i]]||[200,200,200]);
   const shade=(c,f)=>`rgb(${c.map(v=>Math.max(0,Math.min(255,v*f))).join(',')})`;
   let path=new Path2D(),hl=new Path2D(),jp=new Path2D();
   const flush=()=>{const c=colOf(ci);g.lineWidth=lw;g.strokeStyle=shade(c,.62);g.stroke(path);g.lineWidth=lw*.55;g.strokeStyle=shade(c,1.12);g.stroke(hl);path=new Path2D();hl=new Path2D()};
@@ -526,7 +541,7 @@ function updateStats(){
     cb.onchange=()=>{D.enabled[k]=cb.checked;rebuild()};
     const sw=document.createElement('span');sw.className='sw';sw.style.background=hex(D.centers[k]);
     const h=document.createElement('span');h.textContent=hex(D.centers[k]);
-    const n=document.createElement('span');n.className='n';n.textContent=D.enabled[k]?f(S.perColor[k]||0):'dikilmez';
+    const n=document.createElement('span');n.className='n';n.textContent=!D.enabled[k]?'dikilmez':S.pro?'—':f(S.perColor[k]||0);
     el.append(cb,sw,h,n);box.append(el);
   });
 }
@@ -581,6 +596,7 @@ function run(full){
       $('msg').textContent='';
       if(full){if(processImage())remapOverrides();else{$('msg').textContent='Görselde dikilecek alan bulunamadı. Arka plan seçeneğini değiştirmeyi dene.'}}
       buildStitches();render();updateStats();showRegion();
+      if(typeof PRO!=='undefined'&&PRO){PRO=null;$('proMsg').textContent='Ayarlar değişti; profesyonel dikişi yeniden oluştur.'}
     }catch(e){$('msg').textContent='İşlem sırasında hata oluştu: '+e.message}
     $('busy').hidden=true;
   },0)),250);
@@ -684,15 +700,48 @@ function zip(files){
   return new Blob([...parts,...cd,new Uint8Array(e)],{type:'application/zip'});
 }
 
+
+/* ---------- professional engine (Ink/Stitch on the server) ---------- */
+let PRO=null, srcBlob=null, proBusy=false;
+try{$('apiUrl').value=localStorage.getItem('nakisApi')||''}catch(e){}
+$('engine').onchange=e=>{$('proBox').hidden=e.target.value!=='pro';$('dl').textContent=e.target.value==='pro'?'Profesyonel PES + DST indir (.zip)':'PES + DST indir (.zip)'};
+$('apiUrl').addEventListener('change',e=>{try{localStorage.setItem('nakisApi',e.target.value.trim())}catch(_){}});
+const b64bytes=s=>Uint8Array.from(atob(s),c=>c.charCodeAt(0));
+$('proGo').onclick=async()=>{
+  if(proBusy||!D)return;
+  const url=$('apiUrl').value.trim().replace(/\/+$/,'');
+  if(!/^https?:\/\//.test(url)){$('proMsg').textContent='Önce sunucu adresini gir (https://… ile başlamalı).';return}
+  const blob=srcBlob||await new Promise(r=>srcCanvas.toBlob(r,'image/png'));
+  const fd=new FormData();fd.append('image',blob,'tasarim.png');
+  fd.append('params',JSON.stringify({width:P.width,ncol:P.ncol,removeBg:P.removeBg,satin:P.satin,minDet:P.minDet,row:P.row,maxst:P.maxst,angle:P.angle,underlay:P.underlay,
+    overrides:OV.map(e=>({nx:e.nx,ny:e.ny,c:e.c,s:e.s})),colorOverrides:COV.map(e=>({c:e.c,s:e.s}))}));
+  proBusy=true;$('proGo').disabled=true;$('busy').textContent='Ink/Stitch dikişleri hesaplıyor… (10–60 sn)';$('busy').hidden=false;$('proMsg').textContent='';
+  try{
+    const res=await fetch(url+'/api/digitize',{method:'POST',body:fd});
+    const r=await res.json().catch(()=>({}));
+    if(!res.ok)throw new Error(r.detail||('sunucu '+res.status+' döndü'));
+    const threads=r.threads.map(h=>[1,3,5].map(i=>parseInt(h.slice(i,i+2),16)));
+    let mx=Infinity,my=Infinity;for(const [x,y,t] of r.stitches)if(t==='S'){if(x<mx)mx=x;if(y<my)my=y}
+    const ops=[];for(const [x,y,t] of r.stitches){if(t==='C'||t==='T'){ops.push({t});continue}ops.push({t,x:(x-mx)/D.PX,y:(y-my)/D.PX})}
+    S={ops,perColor:[],trims:r.trims,count:r.count,colors:threads.length,order:[],threads,pro:true,typeMap:S&&S.typeMap};
+    PRO={pes:b64bytes(r.pes),dst:b64bytes(r.dst),svg:new TextEncoder().encode(r.svg)};
+    render();updateStats();
+    $('proMsg').textContent=`Hazır: ${r.count.toLocaleString('tr-TR')} dikiş, ${r.trims} kesme${r.stats&&r.stats.satin_fallback?' (bazı satenler dolgu olarak dikildi)':''}.`;
+  }catch(e){
+    $('proMsg').textContent=(e instanceof TypeError?'Sunucuya bağlanılamadı. Adresi ve sunucunun açık olduğunu kontrol et.':'Hata: '+e.message);
+  }finally{proBusy=false;$('proGo').disabled=false;$('busy').hidden=true;$('busy').textContent='Dikişler hesaplanıyor…'}
+};
 $('dl').onclick=async()=>{
   if(!S||!S.count){$('msg').textContent='Önce dikilecek bir tasarım oluştur.';return}
   $('msg').textContent='';
   const base=(srcName||'nakis').replace(/[^\wçğıöşüÇĞİÖŞÜ-]+/g,'-').replace(/^-|-$/g,'')||'nakis';
-  const dst=buildDST();
+  const isPro=$('engine').value==='pro';
+  if(isPro&&!PRO){$('msg').textContent='Önce "Profesyonel dikiş oluştur" butonuna bas.';return}
   const pc=document.createElement('canvas');pc.width=pc.height=1400;render(pc,1400);
   const png=new Uint8Array(await (await new Promise(r=>pc.toBlob(r,'image/png'))).arrayBuffer());
-  const pes=buildPES();
-  const blob=zip([{name:base+'.pes',data:pes},{name:base+'.dst',data:dst},{name:base+'_onizleme.png',data:png}]);
+  const files=isPro?[{name:base+'.pes',data:PRO.pes},{name:base+'.dst',data:PRO.dst},{name:base+'_inkstitch.svg',data:PRO.svg}]
+                   :[{name:base+'.pes',data:buildPES()},{name:base+'.dst',data:buildDST()}];
+  const blob=zip([...files,{name:base+'_onizleme.png',data:png}]);
   const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=base+'.zip';
   document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(a.href),4000);
 };
@@ -715,6 +764,7 @@ $('fabric').oninput=e=>{P.fabric=e.target.value;$('hoop').style.background=P.fab
 $('showJumps').onchange=e=>{P.showJumps=e.target.checked;render()};
 
 function loadFile(f){
+  srcBlob=f;
   if(!f||!f.type.startsWith('image/')){$('msg').textContent='Lütfen bir görsel dosyası seç (PNG, JPG, WEBP).';return}
   const img=new Image();img.onload=()=>{
     const m=Math.min(1,1600/Math.max(img.width,img.height));
