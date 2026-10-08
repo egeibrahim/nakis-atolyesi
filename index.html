@@ -64,6 +64,13 @@ button{font:inherit;font-weight:600;border-radius:8px;padding:10px 16px;cursor:p
 button.ghost{background:transparent;color:var(--fg);border-color:var(--line)}
 button:focus-visible,select:focus-visible,input:focus-visible,.drop:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 button:disabled{opacity:.5;cursor:not-allowed}
+.region{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px 16px;display:flex;flex-direction:column;gap:12px}
+.region-head{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px}
+.region-head h2{font-family:var(--f-mono);font-size:.72rem;font-weight:500;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin:0}
+.region-body{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px 20px}
+@media (max-width:560px){.region-body{grid-template-columns:minmax(0,1fr)}}
+.region-body .actions{grid-column:1/-1}
+.hoop canvas{cursor:crosshair}
 .note{color:var(--muted);font-size:.85rem;max-width:70ch}
 .msg{font-size:.85rem;color:var(--warn)}
 .tag{font-family:var(--f-mono);font-size:.7rem;color:var(--muted);border:1px solid var(--line);border-radius:4px;padding:1px 6px}
@@ -141,11 +148,37 @@ button:disabled{opacity:.5;cursor:not-allowed}
         <canvas id="cv" width="1000" height="1000"></canvas>
         <div class="busy" id="busy" hidden>Dikişler hesaplanıyor…</div>
       </div>
+      <div class="region" id="region">
+        <div class="region-head"><h2>Seçili bölge</h2><span id="rgInfo" class="tag">Önizlemede bir bölgeye tıkla</span></div>
+        <div class="region-body" id="rgBody" hidden>
+          <div class="row"><label for="rgType">Dikiş tipi</label>
+            <select id="rgType">
+              <option value="auto">Otomatik</option>
+              <option value="satin">Saten (sarma)</option>
+              <option value="fill">Dolgu (tatami)</option>
+              <option value="run">Düz dikiş (kontur)</option>
+              <option value="skip">Dikme</option>
+            </select></div>
+          <label class="check"><input type="checkbox" id="rgUnder" checked> Alt dikiş</label>
+          <div class="row"><label for="rgDen">Sıklık</label><output id="rgDenO"></output>
+            <input type="range" id="rgDen" min="2" max="7" step="0.1" value="4.5"></div>
+          <div class="row"><label for="rgAng">Dolgu açısı</label><output id="rgAngO"></output>
+            <input type="range" id="rgAng" min="-90" max="90" step="5" value="45"></div>
+          <div class="row"><label for="rgPull">Çekme telafisi</label><output id="rgPullO"></output>
+            <input type="range" id="rgPull" min="0" max="0.8" step="0.05" value="0.2"></div>
+          <div class="row"><label for="rgPitch">Düz dikiş boyu</label><output id="rgPitchO"></output>
+            <input type="range" id="rgPitch" min="1" max="4" step="0.1" value="2"></div>
+          <div class="actions">
+            <button class="ghost" id="rgAll">Bu rengin tüm bölgelerine uygula</button>
+            <button class="ghost" id="rgReset">Bölgeyi sıfırla</button>
+          </div>
+        </div>
+      </div>
       <div class="actions">
         <button id="dl">PES + DST indir (.zip)</button>
         <span id="msg" class="msg"></span>
       </div>
-      <p class="note">Zip içinde Brother <b>.pes</b> (iplik renkleriyle), Tajima <b>.dst</b> ve önizleme PNG'si var. Saten sınırından ince bölgeler (yazılar, çizgiler) saten, daha geniş alanlar tatami dolgu ile dikilir. Kenar alt dikişi dolgudan önce sınırı dikerek kenarları keskinleştirir.</p>
+      <p class="note">Zip içinde Brother <b>.pes</b> (iplik renkleriyle), Tajima <b>.dst</b> ve önizleme PNG'si var. Saten sınırından ince bölgeler (yazılar, çizgiler) saten, daha geniş alanlar tatami dolgu ile dikilir. Kenar alt dikişi dolgudan önce sınırı dikerek kenarları keskinleştirir. Önizlemede bir bölgeye tıklayıp dikiş tipini, sıklığı ve açıyı tek tek değiştirebilirsin.</p>
     </section>
   </div>
 </div>
@@ -271,14 +304,14 @@ function processImage(){
 function buildStitches(){
   if(!D){S=null;return}
   const {W,H,PX,labels}=D;const K=D.centers.length;
-  const rowpx=P.row/PX, maxst=P.maxst/PX, minrun=Math.max(1,P.minDet*.6/PX), minArea=(P.minDet/PX)**2*.8;
+  let rowpx=P.row/PX;const maxst=P.maxst/PX, minrun=Math.max(1,P.minDet*.6/PX), minArea=(P.minDet/PX)**2*.8;
   const jumpTh=2/PX, trimTh=7/PX, ov=0.35/PX;
-  const near1=1/PX,satRow=Math.min(P.row,.35)/PX, satMaxW=P.satin/PX, pull=.2/PX, minSatW=1/PX, satLong=7/PX;
+  const near1=1/PX,satMaxW=P.satin/PX;let satRow=Math.min(P.row,.35)/PX,pull=.2/PX,runPitch=2/PX;const minSatW=1/PX, satLong=7/PX;
   const ids=[...Array(K).keys()].filter(k=>D.areas[k]>0);
   const base=ids.reduce((a,b)=>D.areas[b]>D.areas[a]?b:a,ids[0]);
   const order=[base,...ids.filter(k=>k!==base).sort((a,b)=>D.light[b]-D.light[a])];
   const ops=[];const perColor=[];let trims=0,count=0,last=null,colorsUsed=0,satinN=0,tatamiN=0;
-  const comp=new Int32Array(W*H),q=new Int32Array(W*H),dist=new Uint16Array(W*H);
+  const comp=new Int32Array(W*H),q=new Int32Array(W*H),dist=new Uint16Array(W*H),typeMap=new Uint8Array(W*H);
   const labAt=(x,y)=>{x=Math.round(x);y=Math.round(y);return x>=0&&y>=0&&x<W&&y<H?labels[y*W+x]:-1};
   let curK=-1,firstInColor=true;
   const put=(t,X,Y)=>{ops.push({t,x:X,y:Y});if(t==='S'){count++;perColor[curK]++}last=[X,Y]};
@@ -303,7 +336,7 @@ function buildStitches(){
     }while((cx!==sx||cy!==sy)&&++guard<W*H);
     if(pts.length<8)return;
     // inset slightly toward centroid so the fill covers it
-    const step=2/PX;let acc=0;goTo(pts[0][0],pts[0][1]);
+    const step=runPitch;let acc=0;goTo(pts[0][0],pts[0][1]);
     for(let i=1;i<pts.length;i++){acc+=Math.hypot(pts[i][0]-pts[i-1][0],pts[i][1]-pts[i-1][1]);if(acc>=step||i===pts.length-1){put('S',pts[i][0],pts[i][1]);acc=0}}
   }
   // scan lines at angle; returns runs grouped into continuous chains (one column at a time -> few jumps)
@@ -410,13 +443,24 @@ function buildStitches(){
       let bi=0;if(last){let bd=1e18;todo.forEach((b,i)=>{const d=(b.cx-last[0])**2+(b.cy-last[1])**2;if(d<bd){bd=d;bi=i}})}
       const b=todo.splice(bi,1)[0];
       const width=2*b.maxD/3; // px
-      const isSatin=P.satin>0&&width<=satMaxW;
-      if(P.underlay&&b.a>(2.5/PX)**2)edgeWalk(b);
-      if(isSatin){satin(b);satinN++}else{tatami(b,ang);tatamiN++}
+      // region / color override
+      let st=null;
+      for(const e of OV){if(e.k!==k)continue;const x=Math.min(W-1,Math.round(e.nx*W)),y=Math.min(H-1,Math.round(e.ny*H));if(comp[y*W+x]===b.id){st=e.s;break}}
+      if(!st){const ce=COV.find(e=>e.k===k);if(ce)st=ce.s}
+      let type=st?st.type:'auto';
+      if(type==='auto')type=(P.satin>0&&width<=satMaxW)?'satin':'fill';
+      rowpx=(st?1/st.den:P.row)/PX;satRow=(st?1/st.den:Math.min(P.row,.35))/PX;pull=(st?st.pull:.2)/PX;runPitch=(st&&st.pitch?st.pitch:2)/PX;
+      const under=st?st.under:P.underlay, a2=st?st.ang*Math.PI/180:ang;
+      const code={fill:1,satin:2,run:3,skip:4}[type];
+      for(let y=b.by0;y<=b.by1;y++)for(let x=b.bx0;x<=b.bx1;x++)if(comp[y*W+x]===b.id)typeMap[y*W+x]=code;
+      if(type==='skip')continue;
+      if(type==='run'){edgeWalk(b);runPitch=2/PX;continue}
+      if(under&&b.a>(2.5/PX)**2){const rp=runPitch;runPitch=2/PX;edgeWalk(b);runPitch=rp}
+      if(type==='satin'){satin(b);satinN++}else{tatami(b,a2);tatamiN++}
     }
     ops.push({t:'T'});trims++;
   });
-  S={ops,perColor,trims,count,colors:colorsUsed,order,satinN,tatamiN};
+  S={ops,perColor,trims,count,colors:colorsUsed,order,satinN,tatamiN,typeMap};
 }
 
 /* ---------- render ---------- */
@@ -429,6 +473,7 @@ function render(target,size){
   if(!D||!S)return;
   const pad=Z*.06,sc=Math.min((Z-2*pad)/D.W,(Z-2*pad)/D.H);
   const ox=(Z-D.W*sc)/2,oy=(Z-D.H*sc)/2;
+  if(!target)VIEW={ox,oy,sc};
   const lw=Math.max(.6,.42/D.PX*sc);
   g.lineCap='round';
   let ci=0;let col=S.order.filter(k=>D.enabled[k]&&S.perColor[k]>0);let cur=null;
@@ -445,6 +490,7 @@ function render(target,size){
     cur=[X,Y];
   }
   flush();
+  if(!target&&selOverlay){g.imageSmoothingEnabled=false;g.drawImage(selOverlay,ox,oy,D.W*sc,D.H*sc);g.imageSmoothingEnabled=true}
   if(P.showJumps){g.lineWidth=1;g.setLineDash([4,4]);g.strokeStyle='rgba(255,80,80,.8)';g.stroke(jp);g.setLineDash([])}
 }
 
@@ -470,6 +516,47 @@ function updateStats(){
   });
 }
 
+
+/* ---------- per-region stitch settings ---------- */
+const OV=[];      // region overrides {nx,ny,c,k,s}
+const COV=[];     // whole-color overrides {c,k,s}
+let SEL=null, selMask=null, selOverlay=null, VIEW=null;
+const TYPE_NAME={1:'Dolgu (tatami)',2:'Saten (sarma)',3:'Düz dikiş',4:'Dikilmiyor'};
+const nearestCenter=c=>{let b=0,bd=1e18;D.centers.forEach((q,i)=>{const d=(q[0]-c[0])**2+(q[1]-c[1])**2+(q[2]-c[2])**2;if(d<bd){bd=d;b=i}});return b};
+function remapOverrides(){if(!D)return;for(const e of OV)e.k=nearestCenter(e.c);for(const e of COV)e.k=nearestCenter(e.c);SEL=null;selMask=null;selOverlay=null;showRegion()}
+function regionSettings(){return{type:$('rgType').value,den:+$('rgDen').value,ang:+$('rgAng').value,pull:+$('rgPull').value,under:$('rgUnder').checked,pitch:+$('rgPitch').value}}
+function selEntry(){if(!SEL||!selMask)return -1;return OV.findIndex(e=>{const x=Math.min(D.W-1,Math.round(e.nx*D.W)),y=Math.min(D.H-1,Math.round(e.ny*D.H));return e.k===SEL.k&&selMask[y*D.W+x]})}
+function setOut(){$('rgDenO').textContent=(+$('rgDen').value).toFixed(1)+' sıra/mm';$('rgAngO').textContent=$('rgAng').value+'°';$('rgPullO').textContent=(+$('rgPull').value).toFixed(2)+' mm';$('rgPitchO').textContent=(+$('rgPitch').value).toFixed(1)+' mm'}
+function showRegion(){
+  if(!SEL){$('rgBody').hidden=true;$('rgInfo').textContent='Önizlemede bir bölgeye tıkla';return}
+  $('rgBody').hidden=false;
+  const i=selEntry();const ce=COV.find(e=>e.k===SEL.k);
+  const s=i>=0?OV[i].s:ce?ce.s:{type:'auto',den:+(1/P.row).toFixed(1),ang:P.angle==='alt'?45:+P.angle,pull:.2,under:P.underlay,pitch:2};
+  $('rgType').value=s.type;$('rgDen').value=s.den;$('rgAng').value=s.ang;$('rgPull').value=s.pull;$('rgUnder').checked=s.under;$('rgPitch').value=s.pitch||2;setOut();
+  const x=Math.min(D.W-1,Math.round(SEL.nx*D.W)),y=Math.min(D.H-1,Math.round(SEL.ny*D.H));
+  const cur=S&&S.typeMap?TYPE_NAME[S.typeMap[y*D.W+x]]||'—':'—';
+  $('rgInfo').textContent=`${hex(D.centers[SEL.k])} · ${i>=0?'özel ayar':ce?'renk ayarı':'otomatik'} · şu an: ${cur}`;
+  ['rgAng'].forEach(id=>$(id).closest('.row').style.opacity=s.type==='fill'||s.type==='auto'?1:.45);
+  $('rgPitch').closest('.row').style.opacity=s.type==='run'?1:.45;
+}
+function applyRegion(){
+  if(!SEL)return;const s=regionSettings();const i=selEntry();
+  if(i>=0)OV[i].s=s;else OV.push({nx:SEL.nx,ny:SEL.ny,c:D.centers[SEL.k].slice(),k:SEL.k,s});
+  setOut();rebuild();
+}
+function selectAt(clientX,clientY){
+  if(!D||!VIEW)return;const cv=$('cv'),r=cv.getBoundingClientRect();
+  const cx=(clientX-r.left)*cv.width/r.width,cy=(clientY-r.top)*cv.height/r.height;
+  const x=Math.floor((cx-VIEW.ox)/VIEW.sc),y=Math.floor((cy-VIEW.oy)/VIEW.sc);
+  if(x<0||y<0||x>=D.W||y>=D.H||D.labels[y*D.W+x]<0){SEL=null;selMask=null;selOverlay=null;showRegion();render();return}
+  const k=D.labels[y*D.W+x],W=D.W,H=D.H;selMask=new Uint8Array(W*H);const q=new Int32Array(W*H);let h=0,t=0;q[t++]=y*W+x;selMask[y*W+x]=1;
+  while(h<t){const p=q[h++],px=p%W,py=(p/W)|0;const nb=[px>0?p-1:-1,px<W-1?p+1:-1,py>0?p-W:-1,py<H-1?p+W:-1];for(const n of nb)if(n>=0&&!selMask[n]&&D.labels[n]===k){selMask[n]=1;q[t++]=n}}
+  SEL={nx:(x+.5)/W,ny:(y+.5)/H,k};
+  const oc=document.createElement('canvas');oc.width=W;oc.height=H;const og=oc.getContext('2d');const im=og.createImageData(W,H);
+  for(let i=0;i<W*H;i++)if(selMask[i]){const e=(i%W===0||!selMask[i-1])||(i%W===W-1||!selMask[i+1])||(i<W||!selMask[i-W])||(i>=W*(H-1)||!selMask[i+W]);
+    im.data[i*4]=255;im.data[i*4+1]=255;im.data[i*4+2]=255;im.data[i*4+3]=e?255:70}
+  og.putImageData(im,0,0);selOverlay=oc;showRegion();render();
+}
 /* ---------- pipeline ---------- */
 let timer=null;
 function run(full){
@@ -477,8 +564,8 @@ function run(full){
   timer=setTimeout(()=>requestAnimationFrame(()=>setTimeout(()=>{
     try{
       $('msg').textContent='';
-      if(full){if(!processImage()){$('msg').textContent='Görselde dikilecek alan bulunamadı. Arka planı kaldır seçeneğini kapatmayı dene.'}}
-      buildStitches();render();updateStats();
+      if(full){if(processImage())remapOverrides();else{$('msg').textContent='Görselde dikilecek alan bulunamadı. Arka planı kaldır seçeneğini kapatmayı dene.'}}
+      buildStitches();render();updateStats();showRegion();
     }catch(e){$('msg').textContent='İşlem sırasında hata oluştu: '+e.message}
     $('busy').hidden=true;
   },0)),250);
@@ -602,6 +689,11 @@ const fmt={width:v=>v+' mm',ncol:v=>v,row:v=>(+v).toFixed(2)+' mm',maxst:v=>(+v)
   el.addEventListener('input',()=>{set();run(k==='width'||k==='ncol')});
 });
 $('underlay').onchange=e=>{P.underlay=e.target.checked;rebuild()};
+['rgDen','rgAng','rgPull','rgPitch'].forEach(id=>$(id).addEventListener('input',applyRegion));
+$('rgType').onchange=applyRegion;$('rgUnder').onchange=applyRegion;
+$('rgAll').onclick=()=>{if(!SEL)return;const s=regionSettings();for(let i=OV.length-1;i>=0;i--)if(OV[i].k===SEL.k)OV.splice(i,1);const ci=COV.findIndex(e=>e.k===SEL.k);const e={c:D.centers[SEL.k].slice(),k:SEL.k,s};if(ci>=0)COV[ci]=e;else COV.push(e);rebuild()};
+$('rgReset').onclick=()=>{const i=selEntry();if(i>=0)OV.splice(i,1);showRegion();rebuild()};
+$('cv').addEventListener('click',e=>selectAt(e.clientX,e.clientY));
 $('angle').onchange=e=>{P.angle=e.target.value;rebuild()};
 $('removeBg').onchange=e=>{P.removeBg=e.target.checked;run(true)};
 $('fabric').oninput=e=>{P.fabric=e.target.value;$('hoop').style.background=P.fabric;render()};
@@ -612,7 +704,7 @@ function loadFile(f){
   const img=new Image();img.onload=()=>{
     const m=Math.min(1,1600/Math.max(img.width,img.height));
     const c=document.createElement('canvas');c.width=Math.round(img.width*m);c.height=Math.round(img.height*m);
-    c.getContext('2d').drawImage(img,0,0,c.width,c.height);srcCanvas=c;
+    c.getContext('2d').drawImage(img,0,0,c.width,c.height);srcCanvas=c;OV.length=0;COV.length=0;
     srcName=f.name.replace(/\.[^.]+$/,'');$('srcName').textContent=f.name;run(true);
   };img.onerror=()=>{$('msg').textContent='Görsel açılamadı. Başka bir dosya dene.'};img.src=URL.createObjectURL(f);
 }
