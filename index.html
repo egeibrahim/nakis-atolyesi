@@ -104,6 +104,9 @@ button:disabled{opacity:.5;cursor:not-allowed}
           <input type="range" id="maxst" min="2" max="7" step="0.5" value="4"></div>
         <div class="row"><label for="minDet">En küçük detay</label><output id="minDetO"></output>
           <input type="range" id="minDet" min="0.5" max="3" step="0.1" value="1"></div>
+        <div class="row"><label for="satin">Saten sınırı (bu genişliğe kadar)</label><output id="satinO"></output>
+          <input type="range" id="satin" min="0" max="8" step="0.5" value="5"></div>
+        <label class="check"><input type="checkbox" id="underlay" checked> Kenar alt dikişi (keskin kenar)</label>
         <div class="row"><label for="angle">Dolgu açısı</label>
           <select id="angle">
             <option value="alt">Renge göre değişen</option>
@@ -141,7 +144,7 @@ button:disabled{opacity:.5;cursor:not-allowed}
         <button id="dl">PES + DST indir (.zip)</button>
         <span id="msg" class="msg"></span>
       </div>
-      <p class="note">Zip içinde Brother <b>.pes</b> (iplik renkleriyle), Tajima <b>.dst</b> ve önizleme PNG'si var. Bu sürüm sadece tatami dolgu üretir: düz renkli logo ve rozetlerde en iyi sonucu verir. Saten kenar ve alt dolgu sonraki sürümde.</p>
+      <p class="note">Zip içinde Brother <b>.pes</b> (iplik renkleriyle), Tajima <b>.dst</b> ve önizleme PNG'si var. Saten sınırından ince bölgeler (yazılar, çizgiler) saten, daha geniş alanlar tatami dolgu ile dikilir. Kenar alt dikişi dolgudan önce sınırı dikerek kenarları keskinleştirir.</p>
     </section>
   </div>
 </div>
@@ -149,7 +152,7 @@ button:disabled{opacity:.5;cursor:not-allowed}
 <script>
 (()=>{
 const $=id=>document.getElementById(id);
-const P={width:100,ncol:5,row:.4,maxst:4,minDet:1,angle:'alt',removeBg:true,fabric:'#15161a',showJumps:false};
+const P={width:100,ncol:5,row:.4,maxst:4,minDet:1,satin:5,underlay:true,angle:'alt',removeBg:true,fabric:'#15161a',showJumps:false};
 let srcCanvas=null, srcName='dalga-rozeti';
 let D=null;      // processed data: {W,H,PX,labels,centers,areas,enabled}
 let S=null;      // stitch result: {ops,perColor,trims,count}
@@ -266,83 +269,149 @@ function buildStitches(){
   const {W,H,PX,labels}=D;const K=D.centers.length;
   const rowpx=P.row/PX, maxst=P.maxst/PX, minrun=Math.max(1,P.minDet*.6/PX), minArea=(P.minDet/PX)**2*.8;
   const jumpTh=2/PX, trimTh=7/PX, ov=0.35/PX;
-  // order: largest area first, then light -> dark
+  const satRow=Math.min(P.row,.35)/PX, satMaxW=P.satin/PX, pull=.2/PX, minSatW=1/PX, satLong=7/PX;
   const ids=[...Array(K).keys()].filter(k=>D.areas[k]>0);
   const base=ids.reduce((a,b)=>D.areas[b]>D.areas[a]?b:a,ids[0]);
   const order=[base,...ids.filter(k=>k!==base).sort((a,b)=>D.light[b]-D.light[a])];
-  const ops=[];const perColor=[];let trims=0,count=0,last=null,colorsUsed=0;
-  const comp=new Int32Array(W*H);const q=new Int32Array(W*H);
+  const ops=[];const perColor=[];let trims=0,count=0,last=null,colorsUsed=0,satinN=0,tatamiN=0;
+  const comp=new Int32Array(W*H),q=new Int32Array(W*H),dist=new Uint16Array(W*H);
+  const labAt=(x,y)=>{x=Math.round(x);y=Math.round(y);return x>=0&&y>=0&&x<W&&y<H?labels[y*W+x]:-1};
+  let curK=-1,firstInColor=true;
+  const put=(t,X,Y)=>{ops.push({t,x:X,y:Y});if(t==='S'){count++;perColor[curK]++}last=[X,Y]};
+  const goTo=(X,Y)=>{
+    const d=last?Math.hypot(X-last[0],Y-last[1]):1e9;
+    if(firstInColor||d>jumpTh){if(last&&d>trimTh){ops.push({t:'T'});trims++}put('J',X,Y)}else put('S',X,Y);
+    firstInColor=false;
+  };
+  // Moore-neighbour boundary trace of one component -> edge-walk underlay
+  const DIRS=[[1,0],[1,1],[0,1],[-1,1],[-1,0],[-1,-1],[0,-1],[1,-1]];
+  function edgeWalk(b){
+    let sx=-1,sy=-1;
+    outer:for(let y=b.by0;y<=b.by1;y++)for(let x=b.bx0;x<=b.bx1;x++)if(comp[y*W+x]===b.id){sx=x;sy=y;break outer}
+    if(sx<0)return;
+    const isIn=(x,y)=>x>=0&&y>=0&&x<W&&y<H&&comp[y*W+x]===b.id;
+    const pts=[[sx,sy]];let cx=sx,cy=sy,dir=4,guard=0;
+    do{
+      let found=false;
+      for(let i=0;i<8;i++){const d=(dir+6+i)%8;const nx=cx+DIRS[d][0],ny=cy+DIRS[d][1];
+        if(isIn(nx,ny)){cx=nx;cy=ny;dir=d;found=true;break}}
+      if(!found)break;pts.push([cx,cy]);
+    }while((cx!==sx||cy!==sy)&&++guard<W*H);
+    if(pts.length<8)return;
+    // inset slightly toward centroid so the fill covers it
+    const step=2/PX;let acc=0;goTo(pts[0][0],pts[0][1]);
+    for(let i=1;i<pts.length;i++){acc+=Math.hypot(pts[i][0]-pts[i-1][0],pts[i][1]-pts[i-1][1]);if(acc>=step||i===pts.length-1){put('S',pts[i][0],pts[i][1]);acc=0}}
+  }
+  // scan lines at angle; returns runs grouped into continuous chains (one column at a time -> few jumps)
+  function scan(b,ang,rp,rect){
+    const dx=Math.cos(ang),dy=Math.sin(ang),nx=-dy,ny=dx;
+    const cx=rect?(rect[0]+rect[2])/2:b.cx,cy=rect?(rect[1]+rect[3])/2:b.cy;
+    const r=rect?Math.hypot(rect[2]-rect[0],rect[3]-rect[1])/2+2:Math.hypot(b.bx1-b.bx0,b.by1-b.by0)/2+2;
+    const rows=[];
+    for(let t=-r;t<=r;t+=rp){
+      const runs=[];let s0=null;
+      for(let s=-r;s<=r+1;s+=.75){
+        const x=Math.round(cx+nx*t+dx*s),y=Math.round(cy+ny*t+dy*s);
+        let inside=x>=0&&y>=0&&x<W&&y<H&&comp[y*W+x]===b.id;
+        if(inside&&rect&&(x<rect[0]||x>=rect[2]||y<rect[1]||y>=rect[3]))inside=false;
+        if(inside&&s0===null)s0=s;
+        if(!inside&&s0!==null){runs.push({a:s0,c:s-.75,used:false});s0=null}
+      }
+      const P2=(s)=>[cx+nx*t+dx*s,cy+ny*t+dy*s],L=(s)=>labAt(cx+nx*t+dx*s,cy+ny*t+dy*s);
+      rows.push({runs,P2,L});
+    }
+    const chains=[];
+    for(let i=0;i<rows.length;i++)for(const r0 of rows[i].runs){
+      if(r0.used)continue;const ch=[];let cur=r0,ri=i;
+      while(cur){cur.used=true;ch.push({run:cur,P2:rows[ri].P2,L:rows[ri].L});ri++;if(ri>=rows.length)break;
+        const pr=cur;cur=rows[ri].runs.find(n=>!n.used&&n.a<=pr.c+1&&n.c>=pr.a-1)||null}
+      chains.push(ch);
+    }
+    return chains;
+  }
+  function tatami(b,ang){
+    for(const ch of scan(b,ang,rowpx)){
+      ch.forEach(({run,P2,L},j)=>{
+        let a0=run.a,a1=run.c;if(a1-a0<minrun)return;
+        a0=L(a0-1.5)>=0?a0-ov:a0;a1=L(a1+1.5)>=0?a1+ov:a1;
+        const rev=j%2===1,off=(j%3)*maxst/3;
+        const sA=rev?a1:a0,sB=rev?a0:a1;
+        const grid=[];for(let g=Math.ceil((a0-off)/maxst)*maxst+off;g<a1;g+=maxst)if(g>a0+maxst*.3&&g<a1-maxst*.3)grid.push(g);
+        if(rev)grid.reverse();
+        const p0=P2(sA);goTo(p0[0],p0[1]);for(const g of grid){const p=P2(g);put('S',p[0],p[1])}const pe=P2(sB);put('S',pe[0],pe[1]);
+      });
+    }
+  }
+  function satin(b){
+    // local orientation per 4 mm tile so curves (O, S, C) keep stitches across the stroke
+    if(b.elong>25){for(const ch of scan(b,b.axis+Math.PI/2,satRow))satinChain(ch);return}
+    const T=Math.max(6,Math.round(4/PX));const tiles=[];
+    for(let ty=b.by0;ty<=b.by1;ty+=T)for(let tx=b.bx0;tx<=b.bx1;tx+=T){
+      let n=0,sx=0,sy=0,sxx=0,syy=0,sxy=0;
+      for(let y=ty;y<Math.min(ty+T,H);y++)for(let x=tx;x<Math.min(tx+T,W);x++)if(comp[y*W+x]===b.id){n++;sx+=x;sy+=y;sxx+=x*x;syy+=y*y;sxy+=x*y}
+      if(!n)continue;
+      // widen the window for orientation so small tiles still see the stroke direction
+      let m=0,qx=0,qy=0,qxx=0,qyy=0,qxy=0;const pad=T;
+      for(let y=Math.max(0,ty-pad);y<Math.min(ty+T+pad,H);y++)for(let x=Math.max(0,tx-pad);x<Math.min(tx+T+pad,W);x++)if(comp[y*W+x]===b.id){m++;qx+=x;qy+=y;qxx+=x*x;qyy+=y*y;qxy+=x*y}
+      const mx=qx/m,my=qy/m,axis=.5*Math.atan2(2*(qxy/m-mx*my),(qxx/m-mx*mx)-(qyy/m-my*my));
+      tiles.push({rect:[tx,ty,tx+T,ty+T],axis,cx:tx+T/2,cy:ty+T/2});
+    }
+    while(tiles.length){
+      let bi=0;if(last){let bd=1e18;tiles.forEach((t,i)=>{const d=(t.cx-last[0])**2+(t.cy-last[1])**2;if(d<bd){bd=d;bi=i}})}
+      const tl=tiles.splice(bi,1)[0];
+      for(const ch of scan(b,tl.axis+Math.PI/2,satRow,tl.rect))satinChain(ch);
+    }
+  }
+  function satinChain(ch){
+    ch.forEach(({run,P2,L},j)=>{
+      let a0=run.a,a1=run.c;const w=a1-a0;let ext=pull;if(w+2*ext<minSatW)ext=(minSatW-w)/2;
+      a0-=L(a0-1.5)>=0?Math.max(ext,ov):ext;a1+=L(a1+1.5)>=0?Math.max(ext,ov):ext;
+      const sA=j%2?a1:a0,sB=j%2?a0:a1;const p0=P2(sA);goTo(p0[0],p0[1]);
+      const n=Math.ceil(Math.abs(sB-sA)/satLong);for(let i=1;i<=n;i++){const p=P2(sA+(sB-sA)*i/n);put('S',p[0],p[1])}
+    });
+  }
   order.forEach((k,oi)=>{
     perColor[k]=0;
     if(!D.enabled[k])return;
-    // connected components of color k
+    // components
     comp.fill(0);let nc=0;const boxes=[];
     for(let i=0;i<W*H;i++){
       if(labels[i]!==k||comp[i])continue;
-      nc++;let h=0,t=0;q[t++]=i;comp[i]=nc;let a=0,bx0=W,by0=H,bx1=0,by1=0;
-      while(h<t){const p=q[h++];a++;const x=p%W,y=(p/W)|0;if(x<bx0)bx0=x;if(x>bx1)bx1=x;if(y<by0)by0=y;if(y>by1)by1=y;
+      nc++;let h=0,t=0;q[t++]=i;comp[i]=nc;let a=0,bx0=W,by0=H,bx1=0,by1=0,sx=0,sy=0,sxx=0,syy=0,sxy=0;
+      while(h<t){const p=q[h++];a++;const x=p%W,y=(p/W)|0;sx+=x;sy+=y;sxx+=x*x;syy+=y*y;sxy+=x*y;
+        if(x<bx0)bx0=x;if(x>bx1)bx1=x;if(y<by0)by0=y;if(y>by1)by1=y;
         if(x>0){const n=p-1;if(labels[n]===k&&!comp[n]){comp[n]=nc;q[t++]=n}}
         if(x<W-1){const n=p+1;if(labels[n]===k&&!comp[n]){comp[n]=nc;q[t++]=n}}
         if(y>0){const n=p-W;if(labels[n]===k&&!comp[n]){comp[n]=nc;q[t++]=n}}
         if(y<H-1){const n=p+W;if(labels[n]===k&&!comp[n]){comp[n]=nc;q[t++]=n}}}
-      boxes.push({id:nc,a,bx0,by0,bx1,by1,cx:(bx0+bx1)/2,cy:(by0+by1)/2});
+      const mx=sx/a,my=sy/a,cxx=sxx/a-mx*mx,cyy=syy/a-my*my,cxy=sxy/a-mx*my;
+      boxes.push({id:nc,a,bx0,by0,bx1,by1,cx:(bx0+bx1)/2,cy:(by0+by1)/2,axis:.5*Math.atan2(2*cxy,cxx-cyy),elong:(()=>{const tr=cxx+cyy,dt=Math.sqrt(Math.max(0,(cxx-cyy)**2/4+cxy*cxy));return (tr/2+dt)/Math.max(1e-6,tr/2-dt)})(),maxD:0});
     }
+    // chamfer distance transform (3-4) on this color -> stroke width per component
+    for(let i=0;i<W*H;i++)dist[i]=labels[i]===k?65535:0;
+    for(let y=0;y<H;y++)for(let x=0;x<W;x++){const i=y*W+x;if(!dist[i])continue;let v=dist[i];
+      if(x>0)v=Math.min(v,dist[i-1]+3);if(y>0){v=Math.min(v,dist[i-W]+3);if(x>0)v=Math.min(v,dist[i-W-1]+4);if(x<W-1)v=Math.min(v,dist[i-W+1]+4)}
+      if(x===0||y===0||x===W-1||y===H-1)v=Math.min(v,3);dist[i]=v}
+    for(let y=H-1;y>=0;y--)for(let x=W-1;x>=0;x--){const i=y*W+x;if(!dist[i])continue;let v=dist[i];
+      if(x<W-1)v=Math.min(v,dist[i+1]+3);if(y<H-1){v=Math.min(v,dist[i+W]+3);if(x<W-1)v=Math.min(v,dist[i+W+1]+4);if(x>0)v=Math.min(v,dist[i+W-1]+4)}dist[i]=v}
+    const byId=new Map(boxes.map(b=>[b.id,b]));
+    for(let i=0;i<W*H;i++){const c=comp[i];if(c){const b=byId.get(c);if(dist[i]>b.maxD)b.maxD=dist[i]}}
     let todo=boxes.filter(b=>b.a>=minArea);
     if(!todo.length)return;
     if(colorsUsed>0)ops.push({t:'C'});
-    colorsUsed++;
+    colorsUsed++;curK=k;firstInColor=true;
     const deg=P.angle==='alt'?[0,45,-45,90][oi%4]:+P.angle;const ang=deg*Math.PI/180;
-    const dx=Math.cos(ang),dy=Math.sin(ang),nx=-dy,ny=dx;
-    let firstInColor=true;
     while(todo.length){
-      // nearest component
       let bi=0;if(last){let bd=1e18;todo.forEach((b,i)=>{const d=(b.cx-last[0])**2+(b.cy-last[1])**2;if(d<bd){bd=d;bi=i}})}
       const b=todo.splice(bi,1)[0];
-      const r=Math.hypot(b.bx1-b.bx0,b.by1-b.by0)/2+2;
-      let row=0;
-      for(let t=-r;t<=r;t+=rowpx,row++){
-        // collect runs along this line
-        const runs=[];let s0=null;
-        for(let s=-r;s<=r+1;s+=.75){
-          const x=Math.round(b.cx+nx*t+dx*s),y=Math.round(b.cy+ny*t+dy*s);
-          const inside=x>=0&&y>=0&&x<W&&y<H&&comp[y*W+x]===b.id;
-          if(inside&&s0===null)s0=s;
-          if(!inside&&s0!==null){
-            if(s-s0>=minrun){
-              // overlap into neighbouring colors so no fabric shows between areas
-              const lab=(ss)=>{const xx=Math.round(b.cx+nx*t+dx*ss),yy=Math.round(b.cy+ny*t+dy*ss);return xx>=0&&yy>=0&&xx<W&&yy<H?labels[yy*W+xx]:-1};
-              const e0=lab(s0-1.5)>=0?s0-ov:s0, e1=lab(s+.75)>=0?s-.75+ov:s-.75;
-              runs.push([e0,e1]);
-            }
-            s0=null}
-        }
-        if(!runs.length)continue;
-        const rev=row%2===1;if(rev)runs.reverse();
-        const off=(row%3)*maxst/3;
-        for(const [a0,a1] of runs){
-          const sA=rev?a1:a0,sB=rev?a0:a1;
-          const pts=[sA];
-          const lo=Math.min(sA,sB),hi=Math.max(sA,sB);
-          const grid=[];for(let g=Math.ceil((lo-off)/maxst)*maxst+off;g<hi;g+=maxst)if(g>lo+maxst*.3&&g<hi-maxst*.3)grid.push(g);
-          if(rev)grid.reverse();pts.push(...grid,sB);
-          pts.forEach((s,pi)=>{
-            const X=b.cx+nx*t+dx*s,Y=b.cy+ny*t+dy*s;
-            if(pi===0){
-              const d=last?Math.hypot(X-last[0],Y-last[1]):1e9;
-              if(firstInColor||d>jumpTh){
-                if(last&&d>trimTh){ops.push({t:'T'});trims++}
-                ops.push({t:'J',x:X,y:Y});
-              }else{ops.push({t:'S',x:X,y:Y});count++;perColor[k]++}
-              firstInColor=false;
-            }else{ops.push({t:'S',x:X,y:Y});count++;perColor[k]++}
-            last=[X,Y];
-          });
-        }
-      }
+      const width=2*b.maxD/3; // px
+      const isSatin=P.satin>0&&width<=satMaxW;
+      if(P.underlay&&b.a>(2.5/PX)**2)edgeWalk(b);
+      if(isSatin){satin(b);satinN++}else{tatami(b,ang);tatamiN++}
     }
     ops.push({t:'T'});trims++;
   });
-  S={ops,perColor,trims,count,colors:colorsUsed,order};
+  S={ops,perColor,trims,count,colors:colorsUsed,order,satinN,tatamiN};
 }
 
 /* ---------- render ---------- */
@@ -522,11 +591,12 @@ $('dl').onclick=async()=>{
 };
 
 /* ---------- inputs ---------- */
-const fmt={width:v=>v+' mm',ncol:v=>v,row:v=>(+v).toFixed(2)+' mm',maxst:v=>(+v).toFixed(1)+' mm',minDet:v=>(+v).toFixed(1)+' mm'};
-['width','ncol','row','maxst','minDet'].forEach(k=>{
+const fmt={width:v=>v+' mm',ncol:v=>v,row:v=>(+v).toFixed(2)+' mm',maxst:v=>(+v).toFixed(1)+' mm',minDet:v=>(+v).toFixed(1)+' mm',satin:v=>+v?(+v).toFixed(1)+' mm':'kapalı'};
+['width','ncol','row','maxst','minDet','satin'].forEach(k=>{
   const el=$(k),o=$(k+'O');const set=()=>{P[k]=+el.value;o.textContent=fmt[k](el.value)};set();
   el.addEventListener('input',()=>{set();run(k==='width'||k==='ncol')});
 });
+$('underlay').onchange=e=>{P.underlay=e.target.checked;rebuild()};
 $('angle').onchange=e=>{P.angle=e.target.value;rebuild()};
 $('removeBg').onchange=e=>{P.removeBg=e.target.checked;run(true)};
 $('fabric').oninput=e=>{P.fabric=e.target.value;$('hoop').style.background=P.fabric;render()};
